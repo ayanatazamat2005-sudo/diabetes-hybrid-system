@@ -1,0 +1,64 @@
+import requests
+import streamlit as st
+
+API_URL = "http://127.0.0.1:8000"
+
+st.set_page_config(page_title="Оценка риска диабета", page_icon="🩺")
+st.title("🩺 Оценка риска диабета")
+st.caption("Гибридная система: экспертные правила + машинное обучение. Не заменяет врача.")
+
+FIELDS = [
+    ("Pregnancies", "Количество беременностей"),
+    ("Glucose", "Глюкоза через 2 ч после нагрузки (мг/дл)"),
+    ("BloodPressure", "Диастолическое давление (мм рт. ст.)"),
+    ("SkinThickness", "Толщина кожной складки (мм)"),
+    ("Insulin", "Инсулин через 2 ч (мкЕд/мл)"),
+    ("BMI", "ИМТ"),
+    ("DiabetesPedigreeFunction", "Наследственный индекс диабета"),
+    ("Age", "Возраст (лет)"),
+]
+
+with st.form("patient"):
+    values = {}
+    for name, label in FIELDS:
+        values[name] = st.number_input(label, value=None, placeholder="не указано")
+    submitted = st.form_submit_button("Оценить риск")
+
+if submitted:
+    try:
+        resp = requests.post(f"{API_URL}/explain", json=values, timeout=10)
+    except requests.exceptions.ConnectionError:
+        st.error("API не запущен. Запустите: uvicorn api.main:app --reload")
+        st.stop()
+
+    if resp.status_code == 422:
+        detail = resp.json().get("detail")
+        st.error("Данные некорректны, решение не принято.")
+        if isinstance(detail, dict):
+            for e in detail["errors"]:
+                st.write(f"• [{e['rule']}] {e['message']}")
+        else:
+            st.write("Проверьте тип значений: нужны числа.")
+        st.stop()
+
+    r = resp.json()
+    box = {"high_risk": st.error, "low_risk": st.success, "expert_review": st.warning}
+    box.get(r["decision"], st.info)(r["label"])
+
+    if r["probability"] is not None:
+        st.metric("Вероятность диабета",
+                  f"{r['probability']:.0%}", help=f"Порог решения: {r['threshold']:.0%}")
+        st.progress(min(float(r["probability"]), 1.0))
+
+    if r["fired_rules"]:
+        st.subheader("Сработавшие правила")
+        for x in r["fired_rules"]:
+            st.write(f"• **{x['rule']}** — {x['message']} _(источник: {x['source']})_")
+
+    if r["top_features"]:
+        st.subheader("Что больше всего повлияло")
+        for f in r["top_features"]:
+            st.write(f"• {f['feature']}: {f['effect']} ({f['contribution']:+.2f})")
+
+    for w in r["warnings"]:
+        st.caption(f"⚠️ {w}")
